@@ -769,10 +769,10 @@ static void FIO_freeDResources(dRess_t ress)
 
 
 /** FIO_fwriteSparse() :
-*   @return : storedSkips, to be provided to next call to FIO_fwriteSparse() of LZ4IO_fwriteSparseEnd() */
+*   @return : storedSkips, to be provided to next call to FIO_fwriteSparse() of FIO_fwriteSparseEnd() */
 static unsigned FIO_fwriteSparse(FILE* file, const void* buffer, size_t bufferSize, unsigned storedSkips)
 {
-    const size_t* const bufferT = (const size_t*)buffer;   /* Buffer is supposed malloc'ed, hence aligned on size_t */
+    const size_t* const bufferT = (const size_t*)buffer;   /* Buffer is expected malloc'ed, hence aligned on size_t */
     size_t bufferSizeT = bufferSize / sizeof(size_t);
     const size_t* const bufferTEnd = bufferT + bufferSizeT;
     const size_t* ptrT = bufferT;
@@ -817,20 +817,21 @@ static unsigned FIO_fwriteSparse(FILE* file, const void* buffer, size_t bufferSi
         ptrT += seg0SizeT;
     }
 
+    /* block tail */
     {   static size_t const maskT = sizeof(size_t)-1;
         if (bufferSize & maskT) {   /* size not multiple of sizeof(size_t) : implies end of block */
-            const char* const restStart = (const char*)bufferTEnd;
-            const char* restPtr = restStart;
+            size_t container = 0;
             size_t const restSize =  bufferSize & maskT;
-            const char* const restEnd = restStart + restSize;
-            for ( ; (restPtr < restEnd) && (*restPtr == 0); restPtr++) ;
-            storedSkips += (unsigned) (restPtr - restStart);
-            if (restPtr != restEnd) {
-                int const seekResult = LONG_SEEK(file, storedSkips, SEEK_CUR);
-                if (seekResult) EXM_THROW(74, "Sparse skip error ; try --no-sparse");
-                storedSkips = 0;
-                {   size_t const sizeCheck = fwrite(restPtr, 1, restEnd - restPtr, file);
-                    if (sizeCheck != (size_t)(restEnd - restPtr)) EXM_THROW(75, "Write error : cannot write decoded end of block");
+            memcpy(&container, bufferTEnd, restSize);
+            if (container==0) storedSkips += restSize;
+            else {
+                if (storedSkips) {
+                    int const seekResult = LONG_SEEK(file, storedSkips, SEEK_CUR);
+                    if (seekResult) EXM_THROW(74, "Sparse skip error ; try --no-sparse");
+                    storedSkips = 0;
+                }
+                {   size_t const sizeCheck = fwrite(bufferTEnd, 1, restSize, file);
+                    if (sizeCheck != restSize) EXM_THROW(75, "Write error : cannot write decoded end of block");
     }   }   }   }
 
     return storedSkips;
@@ -838,7 +839,7 @@ static unsigned FIO_fwriteSparse(FILE* file, const void* buffer, size_t bufferSi
 
 static void FIO_fwriteSparseEnd(FILE* file, unsigned storedSkips)
 {
-    if (storedSkips-->0) {   /* implies g_sparseFileSupport>0 */
+    if (storedSkips-- > 0) {   /* implies g_sparseFileSupport>0 */
         int const seekResult = LONG_SEEK(file, storedSkips, SEEK_CUR);
         if (seekResult != 0) EXM_THROW(69, "Final skip error (sparse file)");
         {   const char lastZeroByte[1] = { 0 };
