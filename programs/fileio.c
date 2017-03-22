@@ -776,7 +776,8 @@ static unsigned FIO_fwriteSparse(FILE* file, const void* buffer, size_t bufferSi
     size_t bufferSizeT = bufferSize / sizeof(size_t);
     const size_t* const bufferTEnd = bufferT + bufferSizeT;
     const size_t* ptrT = bufferT;
-    static const size_t segmentSizeT = (32 KB) / sizeof(size_t);   /* 0-test re-attempted every 32 KB */
+    static const size_t segmentSizeT = (32 KB) / sizeof(size_t);   /* probing re-attempted every 32 KB */
+    static const size_t minNb0T = (4 KB) / sizeof(size_t);   /* sparse-capable FS need at least one sector size to skip */
 
     if (!g_sparseFileSupport) {  /* normal write */
         size_t const sizeCheck = fwrite(buffer, 1, bufferSize, file);
@@ -799,12 +800,15 @@ static unsigned FIO_fwriteSparse(FILE* file, const void* buffer, size_t bufferSi
         if (seg0SizeT > bufferSizeT) seg0SizeT = bufferSizeT;
         bufferSizeT -= seg0SizeT;
         for (nb0T=0; (nb0T < seg0SizeT) && (ptrT[nb0T] == 0); nb0T++) ;
+        if ((nb0T < minNb0T) && (!storedSkips)) nb0T = 0;   /* need to skip a minimum amount */
         storedSkips += (unsigned)(nb0T * sizeof(size_t));
 
-        if (nb0T != seg0SizeT) {   /* not all 0s */
-            int const seekResult = LONG_SEEK(file, storedSkips, SEEK_CUR);
-            if (seekResult) EXM_THROW(72, "Sparse skip error ; try --no-sparse");
-            storedSkips = 0;
+        if (nb0T != seg0SizeT) { /* not all 0s */
+            if (storedSkips) {   /* sparse section */
+                int const seekResult = LONG_SEEK(file, storedSkips, SEEK_CUR);
+                if (seekResult) EXM_THROW(72, "Sparse skip error ; try --no-sparse");
+                storedSkips = 0;
+            }
             seg0SizeT -= nb0T;
             ptrT += nb0T;
             {   size_t const sizeCheck = fwrite(ptrT, sizeof(size_t), seg0SizeT, file);
@@ -817,12 +821,12 @@ static unsigned FIO_fwriteSparse(FILE* file, const void* buffer, size_t bufferSi
         if (bufferSize & maskT) {   /* size not multiple of sizeof(size_t) : implies end of block */
             const char* const restStart = (const char*)bufferTEnd;
             const char* restPtr = restStart;
-            size_t restSize =  bufferSize & maskT;
+            size_t const restSize =  bufferSize & maskT;
             const char* const restEnd = restStart + restSize;
             for ( ; (restPtr < restEnd) && (*restPtr == 0); restPtr++) ;
             storedSkips += (unsigned) (restPtr - restStart);
             if (restPtr != restEnd) {
-                int seekResult = LONG_SEEK(file, storedSkips, SEEK_CUR);
+                int const seekResult = LONG_SEEK(file, storedSkips, SEEK_CUR);
                 if (seekResult) EXM_THROW(74, "Sparse skip error ; try --no-sparse");
                 storedSkips = 0;
                 {   size_t const sizeCheck = fwrite(restPtr, 1, restEnd - restPtr, file);
